@@ -1,0 +1,29 @@
+module OffsetMachines
+  VERSION: String
+  CAPACITY: Integer
+  type ack_result = :ok | :duplicate | :stale | :out_of_window
+  type commit_result = :advanced | :duplicate | :stale | :unacked
+  class Status < Data
+    attr_reader generation: Integer
+    attr_reader base: Integer
+    attr_reader commit_candidate: Integer?
+    attr_reader frontier: Integer?
+    attr_reader acked: Integer
+    def self.new: (generation: Integer, base: Integer, commit_candidate: Integer?, frontier: Integer?, acked: Integer) -> Status
+  end
+  class Tracker
+    def self.new: () -> Tracker
+    def capacity: () -> Integer
+    def generation: () -> Integer
+    def base: () -> Integer
+    def acked: () -> Integer
+    def assign: (Integer generation, Integer base_offset) -> (:assigned | :stale)
+    def reassign: (Integer base_offset) -> Integer?
+    def ack: (Integer generation, Integer offset) -> ack_result
+    def mark_committed: (Integer generation, Integer offset) -> commit_result
+    def commit_candidate: () -> Integer?
+    def frontier: () -> Integer?
+    def gaps: (Integer from, Integer limit) -> Array[Integer]
+    def status: () -> Status
+  end
+end

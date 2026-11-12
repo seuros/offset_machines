@@ -1,0 +1,14 @@
+[package]
+name = "offset-machines"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bounded per-partition acknowledgement bitmap with contiguous commit candidates and generation-checked assignment"
+readme = "README.md"
+exclude = ["src/**/tests.rs", "tests/"]
+keywords = ["offset", "acknowledgement", "kafka", "partition", "no-std"]
+categories = ["no-std", "algorithms"]
+
+[lints]
+workspace = true
