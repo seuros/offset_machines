@@ -68,7 +68,8 @@ class TrackerTest < Minitest::Test
     t.ack(3, 10)
     s = t.status
     assert_instance_of OffsetMachines::Status, s
-    assert_equal [3, 10, 11, 11, 1], s.deconstruct_keys(nil).values_at(:generation, :base, :commit_candidate, :frontier, :acked)
+    keys = %i[generation base commit_candidate frontier acked]
+    assert_equal [3, 10, 11, 11, 1], s.deconstruct_keys(nil).values_at(*keys)
     assert_predicate s, :frozen?
   end
 
