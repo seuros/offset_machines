@@ -13,6 +13,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     class.define_method("reassign", method!(Tracker::reassign, 1))?;
     class.define_method("ack", method!(Tracker::ack, 2))?;
     class.define_method("mark_committed", method!(Tracker::mark_committed, 2))?;
+    class.define_method("acked?", method!(Tracker::is_acked, 1))?;
     class.define_method("commit_candidate", method!(Tracker::commit_candidate, 0))?;
     class.define_method("frontier", method!(Tracker::frontier, 0))?;
     class.define_method("gaps", method!(Tracker::gaps, 2))?;

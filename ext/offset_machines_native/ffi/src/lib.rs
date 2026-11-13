@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use magnus::{
     Error, Integer, RArray, Ruby, Symbol, TryConvert, Value, prelude::*, typed_data::Obj,
 };
-use offset_machines::{Ack, Assign, Commit};
+use offset_machines::{Ack, Commit, Refusal};
 
 const WORDS: usize = 4;
 const CAPACITY: u64 = WORDS as u64 * 64;
@@ -23,6 +23,16 @@ impl TryConvert for Number {
             ));
         }
         u64::try_convert(value).map(Self)
+    }
+}
+
+/// Ruby symbol name of a refusal: the snake case of the core variant.
+const fn refusal_name(refusal: Refusal) -> &'static str {
+    match refusal {
+        Refusal::Stale => "stale",
+        Refusal::OutOfWindow => "out_of_window",
+        Refusal::Unacked => "unacked",
+        Refusal::Exhausted => "exhausted",
     }
 }
 
@@ -47,14 +57,19 @@ impl Tracker {
         this.check_frozen()?;
         let outcome = this.core.borrow_mut().assign(generation.0, base.0);
         Ok(ruby.to_symbol(match outcome {
-            Assign::Assigned => "assigned",
-            _ => "stale",
+            Ok(()) => "assigned",
+            Err(refusal) => refusal_name(refusal),
         }))
     }
 
-    fn reassign(this: Obj<Self>, base: Number) -> Result<Option<u64>, Error> {
+    /// The new generation, or a refusal symbol.
+    fn reassign(ruby: &Ruby, this: Obj<Self>, base: Number) -> Result<Value, Error> {
         this.check_frozen()?;
-        Ok(this.core.borrow_mut().reassign(base.0))
+        let outcome = this.core.borrow_mut().reassign(base.0);
+        Ok(match outcome {
+            Ok(generation) => ruby.integer_from_u64(generation).as_value(),
+            Err(refusal) => ruby.to_symbol(refusal_name(refusal)).as_value(),
+        })
     }
 
     fn ack(
@@ -66,10 +81,9 @@ impl Tracker {
         this.check_frozen()?;
         let outcome = this.core.borrow_mut().ack(generation.0, offset.0);
         Ok(ruby.to_symbol(match outcome {
-            Ack::Ok => "ok",
-            Ack::Duplicate => "duplicate",
-            Ack::Stale => "stale",
-            _ => "out_of_window",
+            Ok(Ack::Duplicate) => "duplicate",
+            Ok(Ack::Recorded) => "recorded",
+            Err(refusal) => refusal_name(refusal),
         }))
     }
 
@@ -85,11 +99,14 @@ impl Tracker {
             .borrow_mut()
             .mark_committed(generation.0, offset.0);
         Ok(ruby.to_symbol(match outcome {
-            Commit::Advanced => "advanced",
-            Commit::Duplicate => "duplicate",
-            Commit::Stale => "stale",
-            _ => "unacked",
+            Ok(Commit::Duplicate) => "duplicate",
+            Ok(Commit::Advanced) => "advanced",
+            Err(refusal) => refusal_name(refusal),
         }))
+    }
+
+    fn is_acked(&self, offset: Number) -> bool {
+        self.core.borrow().is_acked(offset.0)
     }
 
     fn commit_candidate(&self) -> Option<u64> {

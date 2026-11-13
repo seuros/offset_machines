@@ -1,42 +1,28 @@
 #![no_std]
 #![doc = include_str!("../README.md")]
 
-/// Outcome of [`Tracker::assign`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Assign {
-    /// The assignment was installed; the window restarts at the given base.
-    Assigned,
-    /// The generation is not newer than the current one (zero is never newer).
-    Stale,
-}
+mod refusal;
 
-/// Outcome of [`Tracker::ack`].
+pub use refusal::Refusal;
+
+/// Honoured outcome of [`Tracker::ack`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Ack {
     /// The offset was recorded.
-    Ok,
-    /// The offset was already acknowledged or is already below the window.
+    Recorded,
+    /// Idempotent repeat: the offset was already acknowledged or is already
+    /// below the window (committed). Nothing changed.
     Duplicate,
-    /// The generation is not the current assignment generation.
-    Stale,
-    /// The offset is beyond the window (or is `u64::MAX`); nothing was recorded.
-    OutOfWindow,
 }
 
-/// Outcome of [`Tracker::mark_committed`].
+/// Honoured outcome of [`Tracker::mark_committed`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Commit {
     /// The window slid forward to the confirmed offset.
     Advanced,
-    /// The confirmed offset is not beyond the current window base.
+    /// Idempotent repeat: the confirmed offset is not beyond the current
+    /// window base, so it is already committed. Nothing changed.
     Duplicate,
-    /// The generation is not the current assignment generation.
-    Stale,
-    /// The confirmed offset is beyond the contiguous acknowledged prefix.
-    Unacked,
 }
 
 /// Per-partition acknowledgement window of `WORDS * 64` offsets.
@@ -65,7 +51,8 @@ impl<const WORDS: usize> Tracker<WORDS> {
     /// Number of offsets in the window.
     pub const CAPACITY: u64 = WORDS as u64 * 64;
 
-    /// Start unassigned: generation zero, so every acknowledgement is stale.
+    /// Start unassigned: generation zero, so every acknowledgement and
+    /// confirmation is refused as [`Refusal::Stale`].
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -89,48 +76,62 @@ impl<const WORDS: usize> Tracker<WORDS> {
 
     /// Install a newer assignment generation and restart the window at
     /// `base_offset`, discarding acknowledgements of the previous generation.
-    #[must_use]
-    pub const fn assign(&mut self, generation: u64, base_offset: u64) -> Assign {
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::Stale`] when `generation` is not newer than the current one
+    /// (zero is never newer).
+    pub const fn assign(&mut self, generation: u64, base_offset: u64) -> Result<(), Refusal> {
         if generation <= self.generation {
-            return Assign::Stale;
+            return Err(Refusal::Stale);
         }
         self.generation = generation;
         self.base = base_offset;
         self.bits = [0; WORDS];
-        Assign::Assigned
+        Ok(())
     }
 
-    /// Assign the next generation at `base_offset`; `None` when the
-    /// generation space is exhausted.
-    pub fn reassign(&mut self, base_offset: u64) -> Option<u64> {
-        let generation = self.generation.checked_add(1)?;
-        (self.assign(generation, base_offset) == Assign::Assigned).then_some(generation)
+    /// Assign the next generation at `base_offset` and return it.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::Exhausted`] when the current generation is `u64::MAX`.
+    pub fn reassign(&mut self, base_offset: u64) -> Result<u64, Refusal> {
+        let generation = self.generation.checked_add(1).ok_or(Refusal::Exhausted)?;
+        self.assign(generation, base_offset)?;
+        Ok(generation)
     }
 
     /// Record that `offset` finished processing under `generation`.
-    #[must_use]
-    pub fn ack(&mut self, generation: u64, offset: u64) -> Ack {
+    ///
+    /// An offset already acknowledged, or already below the window, is an
+    /// idempotent repeat: [`Ack::Duplicate`].
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::Stale`] when `generation` is not the current assignment
+    /// generation (always, while unassigned); [`Refusal::OutOfWindow`] when
+    /// `offset` is beyond the window or is `u64::MAX`.
+    pub fn ack(&mut self, generation: u64, offset: u64) -> Result<Ack, Refusal> {
         if generation != self.generation || generation == 0 {
-            return Ack::Stale;
+            return Err(Refusal::Stale);
         }
         let Some(index) = offset.checked_sub(self.base) else {
-            return Ack::Duplicate;
+            return Ok(Ack::Duplicate);
         };
         if index >= Self::CAPACITY || offset == u64::MAX {
-            return Ack::OutOfWindow;
+            return Err(Refusal::OutOfWindow);
         }
-        let Some(word) = usize::try_from(index / 64)
+        let word = usize::try_from(index / 64)
             .ok()
             .and_then(|word| self.bits.get_mut(word))
-        else {
-            return Ack::OutOfWindow;
-        };
+            .ok_or(Refusal::OutOfWindow)?;
         let mask = 1_u64 << (index % 64);
         if *word & mask != 0 {
-            return Ack::Duplicate;
+            return Ok(Ack::Duplicate);
         }
         *word |= mask;
-        Ack::Ok
+        Ok(Ack::Recorded)
     }
 
     /// Length of the contiguous acknowledged prefix from `base`.
@@ -176,6 +177,27 @@ impl<const WORDS: usize> Tracker<WORDS> {
             .sum()
     }
 
+    /// Whether `offset` is already acknowledged under the current generation:
+    /// it is below `base` (covered by the committed base) or recorded in the
+    /// window. Exactly the offsets for which [`Tracker::ack`] with the current
+    /// generation answers [`Ack::Duplicate`].
+    ///
+    /// `false` for an offset in the window that is not recorded, for any
+    /// offset beyond the window, for `u64::MAX`, and for every offset while
+    /// unassigned (the base is zero and the window empty). A pure query: it
+    /// takes no generation because it reads only the current one, and a newer
+    /// [`Tracker::assign`] forgets what the previous generation acknowledged.
+    #[must_use]
+    pub fn is_acked(&self, offset: u64) -> bool {
+        let Some(index) = offset.checked_sub(self.base) else {
+            return true;
+        };
+        usize::try_from(index / 64)
+            .ok()
+            .and_then(|word| self.bits.get(word))
+            .is_some_and(|word| word & (1_u64 << (index % 64)) != 0)
+    }
+
     /// Unacknowledged offsets below the frontier, ascending, starting at
     /// `from` (clamped up to `base`). Resume by passing last yielded + 1.
     #[must_use]
@@ -190,23 +212,31 @@ impl<const WORDS: usize> Tracker<WORDS> {
     /// Adapter confirms offsets below `offset` are durably committed under
     /// `generation`; the window slides to `offset`. Partial confirmation up
     /// to the commit candidate is allowed.
-    #[must_use]
-    pub fn mark_committed(&mut self, generation: u64, offset: u64) -> Commit {
+    ///
+    /// An offset not beyond the window base is already committed: an
+    /// idempotent repeat, [`Commit::Duplicate`].
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::Stale`] when `generation` is not the current assignment
+    /// generation (always, while unassigned); [`Refusal::Unacked`] when
+    /// `offset` is beyond the contiguous acknowledged prefix.
+    pub fn mark_committed(&mut self, generation: u64, offset: u64) -> Result<Commit, Refusal> {
         if generation != self.generation || generation == 0 {
-            return Commit::Stale;
+            return Err(Refusal::Stale);
         }
         if offset <= self.base {
-            return Commit::Duplicate;
+            return Ok(Commit::Duplicate);
         }
         if self
             .commit_candidate()
             .is_none_or(|candidate| offset > candidate)
         {
-            return Commit::Unacked;
+            return Err(Refusal::Unacked);
         }
         self.slide(offset - self.base);
         self.base = offset;
-        Commit::Advanced
+        Ok(Commit::Advanced)
     }
 
     fn slide(&mut self, shift: u64) {
@@ -232,16 +262,6 @@ impl<const WORDS: usize> Tracker<WORDS> {
                 (low >> bits) | (high << (64 - bits))
             };
         }
-    }
-
-    fn is_acked(&self, offset: u64) -> bool {
-        let Some(index) = offset.checked_sub(self.base) else {
-            return true;
-        };
-        usize::try_from(index / 64)
-            .ok()
-            .and_then(|word| self.bits.get(word))
-            .is_some_and(|word| word & (1_u64 << (index % 64)) != 0)
     }
 }
 

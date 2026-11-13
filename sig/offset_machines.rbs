@@ -1,7 +1,16 @@
 module OffsetMachines
   VERSION: String
   CAPACITY: Integer
-  type ack_result = :ok | :duplicate | :stale | :out_of_window
+  # Refusals: the call was not honoured and changed nothing. One symbol per
+  # core `Refusal` variant; there is no catch-all.
+  type refusal = :stale | :out_of_window | :unacked | :exhausted
+  # Honoured: :assigned. Refused: :stale.
+  type assign_result = :assigned | :stale
+  # Honoured: the new generation. Refused: :exhausted.
+  type reassign_result = Integer | :exhausted
+  # Honoured: :recorded, :duplicate (idempotent repeat). Refused: :stale, :out_of_window.
+  type ack_result = :recorded | :duplicate | :stale | :out_of_window
+  # Honoured: :advanced, :duplicate (idempotent repeat). Refused: :stale, :unacked.
   type commit_result = :advanced | :duplicate | :stale | :unacked
   class Status < Data
     attr_reader generation: Integer
@@ -17,10 +26,14 @@ module OffsetMachines
     def generation: () -> Integer
     def base: () -> Integer
     def acked: () -> Integer
-    def assign: (Integer generation, Integer base_offset) -> (:assigned | :stale)
-    def reassign: (Integer base_offset) -> Integer?
+    def assign: (Integer generation, Integer base_offset) -> assign_result
+    def reassign: (Integer base_offset) -> reassign_result
     def ack: (Integer generation, Integer offset) -> ack_result
     def mark_committed: (Integer generation, Integer offset) -> commit_result
+    # Already acknowledged under the current generation: below `base`, or
+    # recorded in the window. Exactly when `ack(generation, offset)` would
+    # answer :duplicate. Always false while unassigned.
+    def acked?: (Integer offset) -> bool
     def commit_candidate: () -> Integer?
     def frontier: () -> Integer?
     def gaps: (Integer from, Integer limit) -> Array[Integer]
