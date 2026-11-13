@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/seuros/offset_machines/compare/offset_machines/v0.1.1...offset_machines/v0.2.0) (2026-11-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* see CONVENTIONS: one exhaustive Refusal per crate, Result from every mutator, honoured idempotent repeats, Ruby mirrors the core. No compatibility aliases. Ruby ack answers :recorded; reassign answers :exhausted instead of nil.
+
+### Features
+
+* report refusals through Result&lt;_, Refusal&gt;, keep duplicate acks and commits honoured, add is_acked ([d1ac915](https://github.com/seuros/offset_machines/commit/d1ac9152bfc994abcc5f6bab20220a3961b5043b))
+
 ## [0.1.1](https://github.com/seuros/offset_machines/compare/offset_machines-v0.1.0...offset_machines/v0.1.1) (2026-11-12)
 
 
