@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0](https://github.com/seuros/offset_machines/compare/offset_machines/v0.3.0...offset_machines/v0.4.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* build the binding on matryona-machines 0.2; optional marks, compiler-checked symbols; ship no test files
+
+### Features
+
+* build the binding on matryona-machines 0.2; optional marks, compiler-checked symbols; ship no test files ([57a0356](https://github.com/seuros/offset_machines/commit/57a03561720799184005b4ff9b9debe857f80fb7))
+
 ## [0.3.0](https://github.com/seuros/offset_machines/compare/offset_machines/v0.2.0...offset_machines/v0.3.0) (2026-11-14)
 
 
