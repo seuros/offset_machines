@@ -1,11 +1,12 @@
 //! Private native entry point.
-use crate::{CAPACITY, Tracker};
+use crate::{CAPACITY, Tracker, status};
 use magnus::{Error, Ruby, function, method, prelude::*};
 
 #[magnus::init]
 fn init(ruby: &Ruby) -> Result<(), Error> {
     let module = ruby.define_module("OffsetMachines")?;
     module.const_set("CAPACITY", CAPACITY)?;
+    module.define_singleton_method("__status", function!(status, 5))?;
     let class = module.define_class("Tracker", ruby.class_object())?;
     class.undef_default_alloc_func();
     class.define_singleton_method("new", function!(Tracker::new, 0))?;

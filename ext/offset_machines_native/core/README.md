@@ -34,6 +34,12 @@ refuses rather than grows.
   offset at or below the base is an idempotent repeat, `Commit::Duplicate`.
   Refused as `Stale` (wrong generation, or unassigned) or `Unacked` (beyond
   the candidate).
+- `status() -> Status` is the five readers as one value. `Status::new::<WORDS>(..)
+  -> Option<Status>` is how a `Status` is built from loose numbers: `None` for
+  any combination no `Tracker<WORDS>` reports (a frontier past the window, a
+  candidate above the frontier, a count that doesn't fit the marks, a base or
+  count while unassigned). The fields are private; a `Status` is valid by
+  construction.
 - `gaps(from)` iterates unacknowledged offsets below the frontier; resume by
   passing the last yielded offset plus one. Output is bounded by the window.
 
@@ -42,6 +48,8 @@ bit-for-bit unchanged. `Refusal` is the crate's only refusal type: `Stale`,
 `OutOfWindow`, `Unacked`, `Exhausted`. No enum is `#[non_exhaustive]`: a new
 variant is a breaking change every caller matches on. Idempotent repeats are honoured (`Ok`)
 and also change nothing.
+
+There is no clock: no operation takes or records an instant.
 
 Crash recovery, persistence, rebalancing protocol and retry policy are adapter
 concerns; after a restart, `assign` a newer generation at the stored offset.

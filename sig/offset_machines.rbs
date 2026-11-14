@@ -12,13 +12,17 @@ module OffsetMachines
   type ack_result = :recorded | :duplicate | :stale | :out_of_window
   # Honoured: :advanced, :duplicate (idempotent repeat). Refused: :stale, :unacked.
   type commit_result = :advanced | :duplicate | :stale | :unacked
+  # The core's `Status`. `new` mirrors `Status::new`: it raises RangeError
+  # unless a tracker of this window could report the five values together,
+  # TypeError for a non-Integer (the two marks may be nil).
   class Status < Data
     attr_reader generation: Integer
     attr_reader base: Integer
     attr_reader commit_candidate: Integer?
     attr_reader frontier: Integer?
     attr_reader acked: Integer
-    def self.new: (generation: Integer, base: Integer, commit_candidate: Integer?, frontier: Integer?, acked: Integer) -> Status
+    def self.new: (Integer generation, Integer base, Integer? commit_candidate, Integer? frontier, Integer acked) -> Status
+                | (generation: Integer, base: Integer, commit_candidate: Integer?, frontier: Integer?, acked: Integer) -> Status
   end
   class Tracker
     def self.new: () -> Tracker

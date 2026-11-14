@@ -226,14 +226,17 @@ The window never grows. An offset that falls outside it is a signal to stop fetc
 - **A repeat is not a refusal.** `:duplicate` from `ack` or `mark_committed` means what you asked for already holds. It is honoured, and it also changes nothing.
 - **Every answer, by method.**
 
-  | Method | Honoured | Refused |
-  | --- | --- | --- |
-  | `assign(generation, base)` | `:assigned` | `:stale` |
-  | `reassign(base)` | the new generation (Integer) | `:exhausted` |
-  | `ack(generation, offset)` | `:recorded`, `:duplicate` | `:stale`, `:out_of_window` |
-  | `mark_committed(generation, offset)` | `:advanced`, `:duplicate` | `:stale`, `:unacked` |
+  | Method | Honoured | Refused | Records the clock |
+  | --- | --- | --- | --- |
+  | `assign(generation, base)` | `:assigned` | `:stale` | never |
+  | `reassign(base)` | the new generation (Integer) | `:exhausted` | never |
+  | `ack(generation, offset)` | `:recorded`, `:duplicate` | `:stale`, `:out_of_window` | never |
+  | `mark_committed(generation, offset)` | `:advanced`, `:duplicate` | `:stale`, `:unacked` | never |
+  | `Status.new(generation, base, commit_candidate, frontier, acked)` | a `Status` | raises `RangeError` / `TypeError` | never |
 
-  Each refusal has its own symbol, the snake_case of the core's `Refusal` variant. There is no catch-all.
+  Each refusal has its own symbol, the snake_case of the core's `Refusal` variant. There is no catch-all. The tracker takes no time at all, so no answer depends on an instant and none records one.
+
+- **A `Status` is valid or does not exist.** `Status.new` (positional, in the order above, or by keyword) checks its five values through the core's `Status::new`: they must be a view some tracker of this window could report. A non-Integer raises `TypeError` (the two marks may be `nil`); anything else no tracker reports, such as a frontier past the window, a candidate above the frontier, or an `acked` count that doesn't fit the marks, raises `RangeError`. `Status` is final: subclassing it raises `TypeError` and `allocate` is gone. That stops accidents, not reflection (`Marshal.load`, `Data#initialize` bound by hand); no method of the gem reads a `Status` back, so a forged one never reaches the tracker.
 
 - **The last offset is reserved.** Offset `2**64-1` is never ackable, so every commit candidate fits in an Integer the tracker accepts back.
 - **One tracker, one partition.** Offsets from two partitions in one tracker is a bug the tracker can't see.

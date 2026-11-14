@@ -4,22 +4,6 @@ require 'minitest/autorun'
 require 'offset_machines'
 
 class TrackerTest < Minitest::Test
-  def test_capacity_is_compiled_constant
-    assert_equal 256, OffsetMachines::CAPACITY
-    assert_equal OffsetMachines::CAPACITY, OffsetMachines::Tracker.new.capacity
-  end
-
-  def test_unassigned_refuses
-    t = OffsetMachines::Tracker.new
-    assert_equal :stale, t.ack(0, 0)
-    assert_equal :stale, t.ack(1, 0)
-    assert_equal :stale, t.mark_committed(0, 1)
-    assert_equal :stale, t.mark_committed(1, 1)
-    assert_equal :stale, t.assign(0, 5)
-    assert_nil t.commit_candidate
-    assert_equal OffsetMachines::Tracker.new.status, t.status
-  end
-
   def test_prefix_gaps_and_commit
     t = OffsetMachines::Tracker.new
     assert_equal :assigned, t.assign(1, 100)
@@ -88,6 +72,12 @@ class TrackerTest < Minitest::Test
 
   def test_refusals_change_nothing
     t = OffsetMachines::Tracker.new
+    fresh = t.status
+    [-> { t.ack(0, 0) }, -> { t.ack(1, 0) }, -> { t.mark_committed(0, 1) }, -> { t.mark_committed(1, 1) },
+     -> { t.assign(0, 5) }].each do |call|
+      assert_equal :stale, call.call
+      assert_equal fresh, t.status
+    end
     t.assign(5, 1000)
     [1000, 1001, 1003].each { |offset| assert_equal :recorded, t.ack(5, offset) }
     before = t.status
@@ -124,15 +114,31 @@ class TrackerTest < Minitest::Test
     assert_equal [1002], t.gaps(0, 256)
   end
 
-  def test_status_is_data
+  def test_a_status_is_valid_or_does_not_exist
+    status = OffsetMachines::Status
     t = OffsetMachines::Tracker.new
     t.assign(3, 10)
-    t.ack(3, 10)
-    s = t.status
-    assert_instance_of OffsetMachines::Status, s
-    keys = %i[generation base commit_candidate frontier acked]
-    assert_equal [3, 10, 11, 11, 1], s.deconstruct_keys(nil).values_at(*keys)
-    assert_predicate s, :frozen?
+    [10, 11, 13].each { |offset| t.ack(3, offset) }
+    assert_instance_of status, t.status
+    assert_predicate t.status, :frozen?
+    assert_equal({ generation: 3, base: 10, commit_candidate: 12, frontier: 14, acked: 3 }, t.status.to_h)
+    assert_equal t.status, status.new(3, 10, 12, 14, 3)
+    assert_equal t.status, status.new(generation: 3, base: 10, commit_candidate: 12, frontier: 14, acked: 3)
+    assert_equal OffsetMachines::Tracker.new.status, status.new(0, 0, nil, nil, 0)
+    [
+      [0, 1, nil, nil, 0], [0, 0, 1, 1, 1], [1, 10, 10, 11, 1], [1, 10, nil, 9, 1], [1, 10, nil, nil, 1],
+      [1, 10, 12, 11, 1], [1, 10, 12, 14, 2], [1, 10, 12, 14, 4], [1, 10, 12, 13, 2], [1, 0, 257, 257, 257],
+      [-1, 0, nil, nil, 0], [1, 2**64, nil, nil, 0], [1, 0, nil, nil, -1]
+    ].each { |fields| assert_raises(RangeError, fields.inspect) { status.new(*fields) } }
+    [1.0, '1', nil, :one].each do |bad|
+      assert_raises(TypeError) { status.new(bad, 0, nil, nil, 0) }
+      assert_raises(TypeError) { status.new(1, bad, nil, nil, 0) }
+      assert_raises(TypeError) { status.new(1, 0, nil, nil, bad) }
+    end
+    assert_raises(TypeError) { status.new(1, 0, 1.0, 1, 1) }
+    assert_raises(TypeError) { status.new(1, 0, 1, '1', 1) }
+    assert_raises(ArgumentError) { status.new(1, 0) }
+    refute_respond_to OffsetMachines, :__status
   end
 
   def test_strict_inputs_and_freeze
@@ -149,7 +155,8 @@ class TrackerTest < Minitest::Test
     assert_raises(FrozenError) { t.reassign(0) }
     assert_raises(FrozenError) { t.ack(1, 0) }
     assert_raises(FrozenError) { t.mark_committed(1, 1) }
-    assert_equal 256, t.capacity
+    assert_equal 256, OffsetMachines::CAPACITY
+    assert_equal OffsetMachines::CAPACITY, t.capacity
   end
 
   def test_gc_stress

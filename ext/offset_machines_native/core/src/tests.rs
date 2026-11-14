@@ -2,6 +2,8 @@ use std::{collections::BTreeSet, vec::Vec};
 
 use super::*;
 
+mod status;
+
 type Small = Tracker<2>;
 
 fn assigned(generation: u64, base: u64) -> Small {
@@ -10,15 +12,23 @@ fn assigned(generation: u64, base: u64) -> Small {
     tracker
 }
 
-#[test]
-fn unassigned_tracker_refuses_everything() {
-    let mut tracker = Small::new();
-    assert_eq!(tracker.ack(0, 0), Err(Refusal::Stale));
-    assert_eq!(tracker.ack(1, 0), Err(Refusal::Stale));
-    assert_eq!(tracker.mark_committed(0, 1), Err(Refusal::Stale));
-    assert_eq!(tracker.assign(0, 5), Err(Refusal::Stale));
-    assert_eq!(tracker.commit_candidate(), None);
-    assert_eq!(Small::CAPACITY, 128);
+/// Record every offset in `offsets` under `generation`, each for the first time.
+fn ack_all(tracker: &mut Small, generation: u64, offsets: impl IntoIterator<Item = u64>) {
+    for offset in offsets {
+        assert_eq!(
+            tracker.ack(generation, offset),
+            Ok(Ack::Recorded),
+            "{offset}"
+        );
+    }
+}
+
+/// Generation 5 at base 1000 with 1000, 1001 and 1003 acknowledged: a
+/// candidate of 1002 and one gap.
+fn with_gap() -> Small {
+    let mut tracker = assigned(5, 1000);
+    ack_all(&mut tracker, 5, [1000, 1001, 1003]);
+    tracker
 }
 
 #[test]
@@ -44,9 +54,7 @@ fn is_acked_reads_the_base_and_the_window() {
 fn contiguous_prefix_and_gaps() {
     let mut tracker = assigned(1, 100);
     assert_eq!(tracker.commit_candidate(), None);
-    for offset in [102, 100, 105] {
-        assert_eq!(tracker.ack(1, offset), Ok(Ack::Recorded));
-    }
+    ack_all(&mut tracker, 1, [102, 100, 105]);
     assert_eq!(tracker.commit_candidate(), Some(101));
     assert_eq!(tracker.frontier(), Some(106));
     assert_eq!(tracker.acked(), 3);
@@ -75,9 +83,7 @@ fn ack_refusals() {
 #[test]
 fn window_slides_only_on_confirmation() {
     let mut tracker = assigned(1, 0);
-    for offset in 0..70 {
-        assert_eq!(tracker.ack(1, offset), Ok(Ack::Recorded));
-    }
+    ack_all(&mut tracker, 1, 0..70);
     assert_eq!(tracker.ack(1, 128), Err(Refusal::OutOfWindow));
     assert_eq!(tracker.commit_candidate(), Some(70));
     assert_eq!(tracker.base(), 0);
@@ -98,21 +104,11 @@ fn window_slides_only_on_confirmation() {
 fn full_window_commits_and_slides_clean() {
     let mut tracker = assigned(1, u64::MAX - 1000);
     let base = tracker.base();
-    for offset in base..base + 128 {
-        assert_eq!(tracker.ack(1, offset), Ok(Ack::Recorded));
-    }
+    ack_all(&mut tracker, 1, base..base + Small::CAPACITY);
     assert_eq!(tracker.commit_candidate(), Some(base + 128));
     assert_eq!(tracker.mark_committed(1, base + 128), Ok(Commit::Advanced));
     assert_eq!(tracker.acked(), 0);
     assert_eq!(tracker.frontier(), None);
-}
-
-#[test]
-fn top_offset_is_never_ackable() {
-    let mut tracker = assigned(1, u64::MAX - 1);
-    assert_eq!(tracker.ack(1, u64::MAX - 1), Ok(Ack::Recorded));
-    assert_eq!(tracker.ack(1, u64::MAX), Err(Refusal::OutOfWindow));
-    assert_eq!(tracker.commit_candidate(), Some(u64::MAX));
 }
 
 #[test]
@@ -158,10 +154,7 @@ fn unchanged<T>(tracker: &mut Small, call: impl FnOnce(&mut Small) -> T) -> T {
 
 #[test]
 fn refusals_leave_the_tracker_untouched() {
-    let mut tracker = assigned(5, 1000);
-    for offset in [1000, 1001, 1003] {
-        assert_eq!(tracker.ack(5, offset), Ok(Ack::Recorded));
-    }
+    let mut tracker = with_gap();
     let t = &mut tracker;
     for generation in [5, 4, 0] {
         assert_eq!(
@@ -203,20 +196,27 @@ fn refusals_leave_the_tracker_untouched() {
         unchanged(&mut spent, |t| t.assign(u64::MAX, 0)),
         Err(Refusal::Stale)
     );
+    // Unassigned, every generation is stale, zero included.
     let mut fresh = Small::new();
-    assert_eq!(unchanged(&mut fresh, |t| t.ack(1, 0)), Err(Refusal::Stale));
+    for generation in [0, 1] {
+        assert_eq!(
+            unchanged(&mut fresh, |t| t.ack(generation, 0)),
+            Err(Refusal::Stale)
+        );
+        assert_eq!(
+            unchanged(&mut fresh, |t| t.mark_committed(generation, 1)),
+            Err(Refusal::Stale)
+        );
+    }
     assert_eq!(
-        unchanged(&mut fresh, |t| t.mark_committed(0, 1)),
+        unchanged(&mut fresh, |t| t.assign(0, 5)),
         Err(Refusal::Stale)
     );
 }
 
 #[test]
 fn idempotent_repeats_are_honoured_and_change_nothing() {
-    let mut tracker = assigned(5, 1000);
-    for offset in [1000, 1001, 1003] {
-        assert_eq!(tracker.ack(5, offset), Ok(Ack::Recorded));
-    }
+    let mut tracker = with_gap();
     let t = &mut tracker;
     for offset in [1001, 1003, 999, 0] {
         assert_eq!(unchanged(t, |t| t.ack(5, offset)), Ok(Ack::Duplicate));

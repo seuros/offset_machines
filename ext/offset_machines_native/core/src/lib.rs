@@ -2,8 +2,13 @@
 #![doc = include_str!("../README.md")]
 
 mod refusal;
+mod status;
 
 pub use refusal::Refusal;
+pub use status::Status;
+
+/// Offsets per bitmap word: one bit each in a `u64`.
+const WORD_BITS: u64 = 64;
 
 /// Honoured outcome of [`Tracker::ack`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,7 +54,7 @@ impl<const WORDS: usize> Default for Tracker<WORDS> {
 
 impl<const WORDS: usize> Tracker<WORDS> {
     /// Number of offsets in the window.
-    pub const CAPACITY: u64 = WORDS as u64 * 64;
+    pub const CAPACITY: u64 = WORDS as u64 * WORD_BITS;
 
     /// Start unassigned: generation zero, so every acknowledgement and
     /// confirmation is refused as [`Refusal::Stale`].
@@ -85,10 +90,15 @@ impl<const WORDS: usize> Tracker<WORDS> {
         if generation <= self.generation {
             return Err(Refusal::Stale);
         }
+        self.install(generation, base_offset);
+        Ok(())
+    }
+
+    /// Start the window of a generation already known to be newer.
+    const fn install(&mut self, generation: u64, base_offset: u64) {
         self.generation = generation;
         self.base = base_offset;
         self.bits = [0; WORDS];
-        Ok(())
     }
 
     /// Assign the next generation at `base_offset` and return it.
@@ -98,7 +108,9 @@ impl<const WORDS: usize> Tracker<WORDS> {
     /// [`Refusal::Exhausted`] when the current generation is `u64::MAX`.
     pub fn reassign(&mut self, base_offset: u64) -> Result<u64, Refusal> {
         let generation = self.generation.checked_add(1).ok_or(Refusal::Exhausted)?;
-        self.assign(generation, base_offset)?;
+        // One past the current generation is newer by construction: no
+        // `Stale` arm to carry.
+        self.install(generation, base_offset);
         Ok(generation)
     }
 
@@ -113,25 +125,41 @@ impl<const WORDS: usize> Tracker<WORDS> {
     /// generation (always, while unassigned); [`Refusal::OutOfWindow`] when
     /// `offset` is beyond the window or is `u64::MAX`.
     pub fn ack(&mut self, generation: u64, offset: u64) -> Result<Ack, Refusal> {
-        if generation != self.generation || generation == 0 {
-            return Err(Refusal::Stale);
-        }
+        self.check_current(generation)?;
         let Some(index) = offset.checked_sub(self.base) else {
             return Ok(Ack::Duplicate);
         };
-        if index >= Self::CAPACITY || offset == u64::MAX {
+        if offset == u64::MAX {
             return Err(Refusal::OutOfWindow);
         }
-        let word = usize::try_from(index / 64)
-            .ok()
+        // The window is exactly the words there are: no word, no window.
+        let (word, mask) = Self::slot(index);
+        let word = word
             .and_then(|word| self.bits.get_mut(word))
             .ok_or(Refusal::OutOfWindow)?;
-        let mask = 1_u64 << (index % 64);
         if *word & mask != 0 {
             return Ok(Ack::Duplicate);
         }
         *word |= mask;
         Ok(Ack::Recorded)
+    }
+
+    /// [`Refusal::Stale`] unless `generation` is the current, assigned one.
+    const fn check_current(&self, generation: u64) -> Result<(), Refusal> {
+        if generation != self.generation || generation == 0 {
+            Err(Refusal::Stale)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Word index (if it fits a `usize`) and bit mask of the slot `index`
+    /// offsets above `base`; the caller checks the word exists.
+    fn slot(index: u64) -> (Option<usize>, u64) {
+        (
+            usize::try_from(index / WORD_BITS).ok(),
+            1 << (index % WORD_BITS),
+        )
     }
 
     /// Length of the contiguous acknowledged prefix from `base`.
@@ -164,8 +192,8 @@ impl<const WORDS: usize> Tracker<WORDS> {
             .enumerate()
             .rev()
             .find(|(_, word)| **word != 0)?;
-        let top = 64 - u64::from(word.leading_zeros());
-        Some(self.base + index as u64 * 64 + top)
+        let top = WORD_BITS - u64::from(word.leading_zeros());
+        Some(self.base + index as u64 * WORD_BITS + top)
     }
 
     /// Number of acknowledged offsets in the window.
@@ -192,10 +220,9 @@ impl<const WORDS: usize> Tracker<WORDS> {
         let Some(index) = offset.checked_sub(self.base) else {
             return true;
         };
-        usize::try_from(index / 64)
-            .ok()
-            .and_then(|word| self.bits.get(word))
-            .is_some_and(|word| word & (1_u64 << (index % 64)) != 0)
+        let (word, mask) = Self::slot(index);
+        word.and_then(|word| self.bits.get(word))
+            .is_some_and(|word| word & mask != 0)
     }
 
     /// Unacknowledged offsets below the frontier, ascending, starting at
@@ -222,9 +249,7 @@ impl<const WORDS: usize> Tracker<WORDS> {
     /// generation (always, while unassigned); [`Refusal::Unacked`] when
     /// `offset` is beyond the contiguous acknowledged prefix.
     pub fn mark_committed(&mut self, generation: u64, offset: u64) -> Result<Commit, Refusal> {
-        if generation != self.generation || generation == 0 {
-            return Err(Refusal::Stale);
-        }
+        self.check_current(generation)?;
         if offset <= self.base {
             return Ok(Commit::Duplicate);
         }
@@ -241,25 +266,23 @@ impl<const WORDS: usize> Tracker<WORDS> {
 
     fn slide(&mut self, shift: u64) {
         let old = self.bits;
-        let (Ok(words), bits) = (usize::try_from(shift / 64), shift % 64) else {
+        let (Ok(words), bits) = (usize::try_from(shift / WORD_BITS), shift % WORD_BITS) else {
             self.bits = [0; WORDS];
             return;
         };
+        // A word past the old window reads as nothing acknowledged.
+        let old_word = |i: usize, ahead: usize| {
+            i.checked_add(ahead)
+                .and_then(|j| old.get(j))
+                .copied()
+                .unwrap_or(0)
+        };
         for (i, slot) in self.bits.iter_mut().enumerate() {
-            let low = i
-                .checked_add(words)
-                .and_then(|j| old.get(j))
-                .copied()
-                .unwrap_or(0);
-            let high = i
-                .checked_add(words + 1)
-                .and_then(|j| old.get(j))
-                .copied()
-                .unwrap_or(0);
+            let low = old_word(i, words);
             *slot = if bits == 0 {
                 low
             } else {
-                (low >> bits) | (high << (64 - bits))
+                (low >> bits) | (old_word(i, words.saturating_add(1)) << (WORD_BITS - bits))
             };
         }
     }
