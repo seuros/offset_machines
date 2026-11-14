@@ -3,9 +3,8 @@ mod init;
 
 use std::cell::RefCell;
 
-use magnus::{
-    Error, Integer, RArray, Ruby, Symbol, TryConvert, Value, prelude::*, typed_data::Obj,
-};
+use magnus::{Error, RArray, Ruby, Symbol, Value, prelude::*, typed_data::Obj};
+use matryona_machines::ruby::{Symbols, integer, optional, symbol};
 use offset_machines::{Ack, Commit, Refusal, Status};
 
 /// Words in the compiled window (`WORDS * 64` offsets).
@@ -15,28 +14,29 @@ const CAPACITY: u64 = Core::CAPACITY;
 /// The window as a gap count: at most this many gaps exist.
 const WINDOW: usize = WORDS * 64;
 
-#[derive(Clone, Copy)]
-struct Number(u64);
-
-impl TryConvert for Number {
-    fn try_convert(value: Value) -> Result<Self, Error> {
-        if Integer::from_value(value).is_none() {
-            return Err(Error::new(
-                Ruby::get_with(value).exception_type_error(),
-                "expected an Integer (unsigned 64-bit)",
-            ));
-        }
-        u64::try_convert(value).map(Self)
+matryona_machines::symbols! {
+    /// The core's refusals as Symbols: the snake case of each variant.
+    Refusals for Refusal as "a refusal" {
+        Stale => "stale",
+        OutOfWindow => "out_of_window",
+        Unacked => "unacked",
+        Exhausted => "exhausted",
     }
 }
 
-/// Ruby symbol name of a refusal: the snake case of the core variant.
-const fn refusal_name(refusal: Refusal) -> &'static str {
-    match refusal {
-        Refusal::Stale => "stale",
-        Refusal::OutOfWindow => "out_of_window",
-        Refusal::Unacked => "unacked",
-        Refusal::Exhausted => "exhausted",
+matryona_machines::symbols! {
+    /// The honoured answers of `ack` as Symbols.
+    Acks for Ack as "an ack" {
+        Recorded => "recorded",
+        Duplicate => "duplicate",
+    }
+}
+
+matryona_machines::symbols! {
+    /// The honoured answers of `mark_committed` as Symbols.
+    Commits for Commit as "a commit" {
+        Advanced => "advanced",
+        Duplicate => "duplicate",
     }
 }
 
@@ -46,19 +46,18 @@ const fn refusal_name(refusal: Refusal) -> &'static str {
 /// `0..2**64-1` or a combination no tracker reports.
 fn status(
     ruby: &Ruby,
-    generation: Number,
-    base: Number,
-    commit_candidate: Option<Number>,
-    frontier: Option<Number>,
-    acked: Number,
+    generation: Value,
+    base: Value,
+    commit_candidate: Value,
+    frontier: Value,
+    acked: Value,
 ) -> Result<(), Error> {
-    let mark = |mark: Option<Number>| mark.map(|mark| mark.0);
     Status::new::<WORDS>(
-        generation.0,
-        base.0,
-        mark(commit_candidate),
-        mark(frontier),
-        acked.0,
+        integer(generation, "generation")?,
+        integer(base, "base")?,
+        optional(commit_candidate, "commit_candidate")?,
+        optional(frontier, "frontier")?,
+        integer(acked, "acked")?,
     )
     .map(|_| ())
     .ok_or_else(|| {
@@ -69,22 +68,12 @@ fn status(
     })
 }
 
-/// The symbol for an outcome: `name` of the honoured value, or the refusal's.
-fn symbol<T>(ruby: &Ruby, outcome: Result<T, Refusal>, name: fn(T) -> &'static str) -> Symbol {
-    ruby.to_symbol(outcome.map_or_else(refusal_name, name))
-}
-
-const fn ack_name(ack: Ack) -> &'static str {
-    match ack {
-        Ack::Recorded => "recorded",
-        Ack::Duplicate => "duplicate",
-    }
-}
-
-const fn commit_name(commit: Commit) -> &'static str {
-    match commit {
-        Commit::Advanced => "advanced",
-        Commit::Duplicate => "duplicate",
+/// The symbol for an outcome: the honoured value's from table `S`, or the
+/// refusal's.
+fn answer<S: Symbols>(ruby: &Ruby, outcome: Result<S::Variant, Refusal>) -> Symbol {
+    match outcome {
+        Ok(honoured) => S::symbol(ruby, honoured),
+        Err(refusal) => Refusals::symbol(ruby, refusal),
     }
 }
 
@@ -102,52 +91,64 @@ impl Tracker {
         }
     }
 
-    /// Run a mutating core call: `FrozenError` before it, nothing after.
-    fn apply<T>(this: Obj<Self>, call: impl FnOnce(&mut Core) -> T) -> Result<T, Error> {
-        this.check_frozen()?;
-        Ok(call(&mut this.core.borrow_mut()))
-    }
-
     fn assign(
         ruby: &Ruby,
         this: Obj<Self>,
-        generation: Number,
-        base: Number,
+        generation: Value,
+        base: Value,
     ) -> Result<Symbol, Error> {
-        let outcome = Self::apply(this, |core| core.assign(generation.0, base.0))?;
-        Ok(symbol(ruby, outcome, |()| "assigned"))
+        this.check_frozen()?;
+        let (generation, base) = (integer(generation, "generation")?, integer(base, "base")?);
+        let outcome = this.core.borrow_mut().assign(generation, base);
+        Ok(match outcome {
+            Ok(()) => symbol(ruby, "assigned"),
+            Err(refusal) => Refusals::symbol(ruby, refusal),
+        })
     }
 
     /// The new generation, or a refusal symbol.
-    fn reassign(ruby: &Ruby, this: Obj<Self>, base: Number) -> Result<Value, Error> {
-        Ok(match Self::apply(this, |core| core.reassign(base.0))? {
+    fn reassign(ruby: &Ruby, this: Obj<Self>, base: Value) -> Result<Value, Error> {
+        this.check_frozen()?;
+        let base = integer(base, "base")?;
+        let outcome = this.core.borrow_mut().reassign(base);
+        Ok(match outcome {
             Ok(generation) => ruby.integer_from_u64(generation).as_value(),
-            Err(refusal) => ruby.to_symbol(refusal_name(refusal)).as_value(),
+            Err(refusal) => Refusals::symbol(ruby, refusal).as_value(),
         })
     }
 
     fn ack(
         ruby: &Ruby,
         this: Obj<Self>,
-        generation: Number,
-        offset: Number,
+        generation: Value,
+        offset: Value,
     ) -> Result<Symbol, Error> {
-        let outcome = Self::apply(this, |core| core.ack(generation.0, offset.0))?;
-        Ok(symbol(ruby, outcome, ack_name))
+        this.check_frozen()?;
+        let (generation, offset) = (
+            integer(generation, "generation")?,
+            integer(offset, "offset")?,
+        );
+        let outcome = this.core.borrow_mut().ack(generation, offset);
+        Ok(answer::<Acks>(ruby, outcome))
     }
 
     fn mark_committed(
         ruby: &Ruby,
         this: Obj<Self>,
-        generation: Number,
-        offset: Number,
+        generation: Value,
+        offset: Value,
     ) -> Result<Symbol, Error> {
-        let outcome = Self::apply(this, |core| core.mark_committed(generation.0, offset.0))?;
-        Ok(symbol(ruby, outcome, commit_name))
+        this.check_frozen()?;
+        let (generation, offset) = (
+            integer(generation, "generation")?,
+            integer(offset, "offset")?,
+        );
+        let outcome = this.core.borrow_mut().mark_committed(generation, offset);
+        Ok(answer::<Commits>(ruby, outcome))
     }
 
-    fn is_acked(&self, offset: Number) -> bool {
-        self.core.borrow().is_acked(offset.0)
+    fn is_acked(&self, offset: Value) -> Result<bool, Error> {
+        Ok(self.core.borrow().is_acked(integer(offset, "offset")?))
     }
 
     fn commit_candidate(&self) -> Option<u64> {
@@ -159,11 +160,12 @@ impl Tracker {
     }
 
     /// At most `limit` gaps (clamped to the window) at or after `from`.
-    fn gaps(ruby: &Ruby, this: &Self, from: Number, limit: Number) -> Result<RArray, Error> {
+    fn gaps(ruby: &Ruby, this: &Self, from: Value, limit: Value) -> Result<RArray, Error> {
+        let (from, limit): (u64, u64) = (integer(from, "from")?, integer(limit, "limit")?);
         // The window bounds the answer whatever the limit.
-        let take = usize::try_from(limit.0).map_or(WINDOW, |limit| limit.min(WINDOW));
+        let take = usize::try_from(limit).map_or(WINDOW, |limit| limit.min(WINDOW));
         let array = ruby.ary_new_capa(take);
-        for offset in this.core.borrow().gaps(from.0).take(take) {
+        for offset in this.core.borrow().gaps(from).take(take) {
             array.push(offset)?;
         }
         Ok(array)

@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, vec::Vec};
 
 use super::*;
+use matryona_machines::testing::{XorShift64, refuses, unchanged};
 
 mod status;
 
@@ -143,75 +144,35 @@ fn gap_iteration_is_resumable_in_bounded_chunks() {
     assert_eq!(seen, (0..127).collect::<Vec<u64>>());
 }
 
-/// Run `call` and prove it left the whole tracker equal to a clone taken
-/// before it.
-fn unchanged<T>(tracker: &mut Small, call: impl FnOnce(&mut Small) -> T) -> T {
-    let before = tracker.clone();
-    let answer = call(tracker);
-    assert_eq!(*tracker, before);
-    answer
-}
-
 #[test]
 fn refusals_leave_the_tracker_untouched() {
     let mut tracker = with_gap();
     let t = &mut tracker;
     for generation in [5, 4, 0] {
-        assert_eq!(
-            unchanged(t, |t| t.assign(generation, 0)),
-            Err(Refusal::Stale)
-        );
+        refuses(t, Refusal::Stale, |t| t.assign(generation, 0));
     }
     for generation in [4, 6, 0] {
-        assert_eq!(
-            unchanged(t, |t| t.ack(generation, 1002)),
-            Err(Refusal::Stale)
-        );
-        assert_eq!(
-            unchanged(t, |t| t.mark_committed(generation, 1001)),
-            Err(Refusal::Stale)
-        );
+        refuses(t, Refusal::Stale, |t| t.ack(generation, 1002));
+        refuses(t, Refusal::Stale, |t| t.mark_committed(generation, 1001));
     }
     for offset in [1000 + Small::CAPACITY, u64::MAX] {
-        assert_eq!(
-            unchanged(t, |t| t.ack(5, offset)),
-            Err(Refusal::OutOfWindow)
-        );
-        assert_eq!(
-            unchanged(t, |t| t.mark_committed(5, offset)),
-            Err(Refusal::Unacked)
-        );
+        refuses(t, Refusal::OutOfWindow, |t| t.ack(5, offset));
+        refuses(t, Refusal::Unacked, |t| t.mark_committed(5, offset));
     }
-    assert_eq!(
-        unchanged(t, |t| t.mark_committed(5, 1003)),
-        Err(Refusal::Unacked)
-    );
+    refuses(t, Refusal::Unacked, |t| t.mark_committed(5, 1003));
     let mut spent = assigned(u64::MAX, 7);
     assert_eq!(spent.ack(u64::MAX, 7), Ok(Ack::Recorded));
-    assert_eq!(
-        unchanged(&mut spent, |t| t.reassign(0)),
-        Err(Refusal::Exhausted)
-    );
-    assert_eq!(
-        unchanged(&mut spent, |t| t.assign(u64::MAX, 0)),
-        Err(Refusal::Stale)
-    );
+    refuses(&mut spent, Refusal::Exhausted, |t| t.reassign(0));
+    refuses(&mut spent, Refusal::Stale, |t| t.assign(u64::MAX, 0));
     // Unassigned, every generation is stale, zero included.
     let mut fresh = Small::new();
     for generation in [0, 1] {
-        assert_eq!(
-            unchanged(&mut fresh, |t| t.ack(generation, 0)),
-            Err(Refusal::Stale)
-        );
-        assert_eq!(
-            unchanged(&mut fresh, |t| t.mark_committed(generation, 1)),
-            Err(Refusal::Stale)
-        );
+        refuses(&mut fresh, Refusal::Stale, |t| t.ack(generation, 0));
+        refuses(&mut fresh, Refusal::Stale, |t| {
+            t.mark_committed(generation, 1)
+        });
     }
-    assert_eq!(
-        unchanged(&mut fresh, |t| t.assign(0, 5)),
-        Err(Refusal::Stale)
-    );
+    refuses(&mut fresh, Refusal::Stale, |t| t.assign(0, 5));
 }
 
 #[test]
@@ -266,17 +227,6 @@ impl Model {
     }
 }
 
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-}
-
 impl Model {
     fn new(generation: u64, base: u64) -> Self {
         Self {
@@ -324,23 +274,25 @@ impl Model {
 
 /// One random operation applied to both; returns whether it was honoured
 /// with an effect (anything else must leave the tracker untouched).
-fn step(rng: &mut Rng, tracker: &mut Small, model: &mut Model) -> bool {
-    let off_generation = model.generation.saturating_add(rng.next() % 2);
-    let generation = if rng.next().is_multiple_of(8) {
+fn step(rng: &mut XorShift64, tracker: &mut Small, model: &mut Model) -> bool {
+    let off_generation = model.generation.saturating_add(rng.below(2));
+    let generation = if rng.next_u64().is_multiple_of(8) {
         off_generation
     } else {
         model.generation
     };
-    match rng.next() % 12 {
+    match rng.below(12) {
         0 => {
-            let generation = (rng.next() % 4).saturating_add(model.generation.saturating_sub(1));
-            let base = rng.next() % 300;
+            let generation = rng
+                .below(4)
+                .saturating_add(model.generation.saturating_sub(1));
+            let base = rng.below(300);
             let result = tracker.assign(generation, base);
             assert_eq!(result, model.assign(generation, base));
             result.is_ok()
         }
         1 => {
-            let base = rng.next() % 300;
+            let base = rng.below(300);
             let result = tracker.reassign(base);
             let expected = model
                 .generation
@@ -351,13 +303,13 @@ fn step(rng: &mut Rng, tracker: &mut Small, model: &mut Model) -> bool {
             result.is_ok()
         }
         2..=7 => {
-            let offset = model.base.saturating_sub(2) + rng.next() % 140;
+            let offset = model.base.saturating_sub(2) + rng.below(140);
             let result = tracker.ack(generation, offset);
             assert_eq!(result, model.ack(generation, offset));
             result == Ok(Ack::Recorded)
         }
         _ => {
-            let target = model.base.saturating_sub(1) + rng.next() % 40;
+            let target = model.base.saturating_sub(1) + rng.below(40);
             let result = tracker.mark_committed(generation, target);
             assert_eq!(result, model.mark_committed(generation, target));
             result == Ok(Commit::Advanced)
@@ -368,7 +320,7 @@ fn step(rng: &mut Rng, tracker: &mut Small, model: &mut Model) -> bool {
 #[test]
 fn matches_reference_model() {
     for seed in 1..40_u64 {
-        let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        let mut rng = XorShift64::new(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         let mut tracker = Small::new();
         let mut model = Model::new(0, 0);
         if seed.is_multiple_of(8) {
@@ -397,7 +349,7 @@ fn matches_reference_model() {
                 .filter(|offset| !model.acked.contains(offset))
                 .collect();
             assert_eq!(tracker.gaps(0).collect::<Vec<u64>>(), want);
-            let probe = model.base.saturating_sub(2) + rng.next() % 140;
+            let probe = model.base.saturating_sub(2) + rng.below(140);
             let repeat = tracker.clone().ack(model.generation, probe) == Ok(Ack::Duplicate);
             assert_eq!(tracker.is_acked(probe), repeat);
         }

@@ -6,9 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 description = "Bounded per-partition acknowledgement bitmap with contiguous commit candidates and generation-checked assignment"
 readme = "README.md"
-exclude = ["src/**/tests.rs", "tests/"]
+exclude = ["src/**/tests.rs", "src/tests/", "tests/"]
 keywords = ["offset", "acknowledgement", "kafka", "partition", "no-std"]
 categories = ["no-std", "algorithms"]
+
+[dev-dependencies]
+matryona-machines = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

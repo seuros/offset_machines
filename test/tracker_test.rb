@@ -155,8 +155,25 @@ class TrackerTest < Minitest::Test
     assert_raises(FrozenError) { t.reassign(0) }
     assert_raises(FrozenError) { t.ack(1, 0) }
     assert_raises(FrozenError) { t.mark_committed(1, 1) }
+    # Frozen is checked first, before the arguments are read.
+    assert_raises(FrozenError) { t.assign(1.5, -1) }
+    assert_raises(FrozenError) { t.reassign(nil) }
+    assert_raises(FrozenError) { t.ack('1', 0) }
+    assert_raises(FrozenError) { t.mark_committed(1, 2**64) }
     assert_equal 256, OffsetMachines::CAPACITY
     assert_equal OffsetMachines::CAPACITY, t.capacity
+  end
+
+  def test_messages_name_the_argument
+    t = OffsetMachines::Tracker.new
+    {
+      -> { t.assign(1.5, 0) } => [TypeError, 'generation must be an Integer'],
+      -> { t.ack(1, -1) } => [RangeError, "offset must be in 0..=#{(2**64) - 1}"],
+      -> { t.gaps(0, nil) } => [TypeError, 'limit must be an Integer'],
+      -> { OffsetMachines::Status.new(1, 0, '1', nil, 0) } => [TypeError, 'commit_candidate must be an Integer']
+    }.each do |call, (error, message)|
+      assert_equal message, assert_raises(error, &call).message
+    end
   end
 
   def test_gc_stress
