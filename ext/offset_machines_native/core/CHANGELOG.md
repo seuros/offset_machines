@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0](https://github.com/seuros/offset_machines/compare/offset-machines-v0.3.0...offset-machines-v0.4.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* validate Status through the core, seal it, and consolidate tracker internals
+
+### Features
+
+* validate Status through the core, seal it, and consolidate tracker internals ([3cc7dd3](https://github.com/seuros/offset_machines/commit/3cc7dd3e160c178f1d368464b1dd4029a60be7bd))
+
 ## [0.3.0](https://github.com/seuros/offset_machines/compare/offset-machines-v0.2.0...offset-machines-v0.3.0) (2026-11-13)
 
 
