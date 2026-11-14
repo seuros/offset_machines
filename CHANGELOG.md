@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/seuros/offset_machines/compare/offset_machines/v0.4.1...offset_machines/v0.4.2) (2026-11-14)
+
+
+### Bug Fixes
+
+* **deps:** require matryona-machines &gt;= 0.4 ([2eb009b](https://github.com/seuros/offset_machines/commit/2eb009bca4484ce5c18051152640f02c8c75ab2b))
+
 ## [0.4.1](https://github.com/seuros/offset_machines/compare/offset_machines/v0.4.0...offset_machines/v0.4.1) (2026-11-14)
 
 
