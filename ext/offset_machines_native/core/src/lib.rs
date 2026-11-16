@@ -1,8 +1,11 @@
 #![no_std]
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 #![doc = include_str!("../README.md")]
 
 mod refusal;
 mod status;
+
+use core::num::NonZeroU64;
 
 pub use refusal::Refusal;
 pub use status::Status;
@@ -63,6 +66,23 @@ impl<const WORDS: usize> Tracker<WORDS> {
         Self {
             generation: 0,
             base: 0,
+            bits: [0; WORDS],
+        }
+    }
+
+    /// Start already assigned: `generation` is current and the window starts
+    /// at `base_offset`, nothing acknowledged.
+    ///
+    /// The tracker [`Tracker::assign`] would make of a fresh one, without the
+    /// refusal: a fresh tracker is at generation zero, so `assign` refuses
+    /// only zero, and a [`NonZeroU64`] is never zero. Equal to
+    /// `Tracker::new()` followed by an honoured `assign(generation.get(),
+    /// base_offset)`.
+    #[must_use]
+    pub const fn assigned(generation: NonZeroU64, base_offset: u64) -> Self {
+        Self {
+            generation: generation.get(),
+            base: base_offset,
             bits: [0; WORDS],
         }
     }
@@ -179,6 +199,8 @@ impl<const WORDS: usize> Tracker<WORDS> {
     #[must_use]
     pub fn commit_candidate(&self) -> Option<u64> {
         let run = self.prefix();
+        // `base + run` is one past an acknowledged offset, and `ack` refuses
+        // `u64::MAX`, so the sum is at most `u64::MAX`.
         (run > 0).then(|| self.base + run)
     }
 
@@ -193,6 +215,8 @@ impl<const WORDS: usize> Tracker<WORDS> {
             .rev()
             .find(|(_, word)| **word != 0)?;
         let top = WORD_BITS - u64::from(word.leading_zeros());
+        // One past an acknowledged offset; `ack` refuses `u64::MAX`, so this
+        // fits (see `commit_candidate`).
         Some(self.base + index as u64 * WORD_BITS + top)
     }
 
@@ -299,13 +323,34 @@ pub struct Gaps<'a, const WORDS: usize> {
 impl<const WORDS: usize> Iterator for Gaps<'_, WORDS> {
     type Item = u64;
 
+    /// Word at a time: a fully acknowledged rest of a word is skipped in one
+    /// step, and the next gap inside a word is its lowest clear bit.
     fn next(&mut self) -> Option<u64> {
+        let tracker = self.tracker;
         while self.next < self.end {
-            let offset = self.next;
-            self.next += 1;
-            if !self.tracker.is_acked(offset) {
-                return Some(offset);
+            // `next` starts at or above `base`, and `end` (the frontier) is at
+            // most `base + CAPACITY`: every offset in between has a word.
+            let (word, _) = Tracker::<WORDS>::slot(self.next - tracker.base);
+            let Some(word) = word.and_then(|word| tracker.bits.get(word)) else {
+                debug_assert!(false, "an offset below the frontier lies in the window");
+                self.next = self.end;
+                return None;
+            };
+            let bit = (self.next - tracker.base) % WORD_BITS;
+            let open = !word >> bit;
+            if open == 0 {
+                self.next = self.next.saturating_add(WORD_BITS - bit).min(self.end);
+                continue;
             }
+            // The lowest clear bit at or above `next`: `u64::MAX` is never
+            // acknowledged, so it lies at or below `u64::MAX` and cannot wrap.
+            let offset = self.next + u64::from(open.trailing_zeros());
+            if offset >= self.end {
+                self.next = self.end;
+                return None;
+            }
+            self.next = offset + 1;
+            return Some(offset);
         }
         None
     }

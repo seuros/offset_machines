@@ -1,10 +1,10 @@
 //! Thin binding to the bounded acknowledgement tracker.
 mod init;
 
-use std::cell::RefCell;
+use std::{cell::RefCell, num::NonZeroU64};
 
-use magnus::{Error, RArray, Ruby, Symbol, Value, prelude::*, typed_data::Obj};
-use matryona_machines::ruby::{Symbols, integer, optional, symbol};
+use magnus::{Error, RArray, RClass, Ruby, Symbol, Value, prelude::*, typed_data::Obj};
+use matryona_machines::ruby::{Class, Registry, Symbols, integer, optional, symbol};
 use offset_machines::{Ack, Commit, Refusal, Status};
 
 /// Words in the compiled window (`WORDS * 64` offsets).
@@ -38,6 +38,14 @@ matryona_machines::symbols! {
         Advanced => "advanced",
         Duplicate => "duplicate",
     }
+}
+
+/// `OffsetMachines::Status`, defined in Ruby before the extension loads,
+/// resolved once at init and pinned.
+static STATUS: Registry<Class> = Registry::new("offset_machines");
+
+fn status_class(ruby: &Ruby) -> Result<RClass, Error> {
+    STATUS.get(ruby).map(|class| class.get(ruby))
 }
 
 /// What `Status.new` checks its five fields with: the core's `Status::new`
@@ -89,6 +97,21 @@ impl Tracker {
         Self {
             core: RefCell::new(Core::new()),
         }
+    }
+
+    /// The core's `Tracker::assigned`: generation zero is the one value the
+    /// core's `NonZeroU64` rules out, so it raises `RangeError` here.
+    fn assigned(ruby: &Ruby, generation: Value, base: Value) -> Result<Self, Error> {
+        let (generation, base) = (integer(generation, "generation")?, integer(base, "base")?);
+        let generation = NonZeroU64::new(generation).ok_or_else(|| {
+            Error::new(
+                ruby.exception_range_error(),
+                "generation 0 is unassigned, never assigned",
+            )
+        })?;
+        Ok(Self {
+            core: RefCell::new(Core::assigned(generation, base)),
+        })
     }
 
     fn assign(
@@ -169,6 +192,24 @@ impl Tracker {
             array.push(offset)?;
         }
         Ok(array)
+    }
+
+    /// The core's `Tracker::status`: the five readers taken in one borrow,
+    /// built into a `Status` through its validating `new`. No reader of this
+    /// tracker is dispatched, so redefining one changes nothing here.
+    fn status(ruby: &Ruby, this: &Self) -> Result<Value, Error> {
+        let class = status_class(ruby)?;
+        let status = this.core.borrow().status();
+        class.funcall(
+            "new",
+            (
+                status.generation(),
+                status.base(),
+                status.commit_candidate(),
+                status.frontier(),
+                status.acked(),
+            ),
+        )
     }
 
     fn generation(&self) -> u64 {

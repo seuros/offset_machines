@@ -1,15 +1,18 @@
 //! Private native entry point.
-use crate::{CAPACITY, Tracker, status};
+use crate::{CAPACITY, STATUS, Tracker, status};
 use magnus::{Error, Ruby, function, method, prelude::*};
+use matryona_machines::ruby::Class;
 
 #[magnus::init]
 fn init(ruby: &Ruby) -> Result<(), Error> {
     let module = ruby.define_module("OffsetMachines")?;
     module.const_set("CAPACITY", CAPACITY)?;
+    STATUS.set(ruby, Class::resolve(ruby, module, "Status")?)?;
     module.define_singleton_method("__status", function!(status, 5))?;
     let class = module.define_class("Tracker", ruby.class_object())?;
     class.undef_default_alloc_func();
     class.define_singleton_method("new", function!(Tracker::new, 0))?;
+    class.define_singleton_method("assigned", function!(Tracker::assigned, 2))?;
     class.define_method("assign", method!(Tracker::assign, 2))?;
     class.define_method("reassign", method!(Tracker::reassign, 1))?;
     class.define_method("ack", method!(Tracker::ack, 2))?;
@@ -21,6 +24,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     class.define_method("generation", method!(Tracker::generation, 0))?;
     class.define_method("base", method!(Tracker::base, 0))?;
     class.define_method("acked", method!(Tracker::acked, 0))?;
+    class.define_method("status", method!(Tracker::status, 0))?;
     class.define_method("capacity", function!(Tracker::capacity, 0))?;
     Ok(())
 }

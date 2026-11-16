@@ -52,6 +52,32 @@ fn is_acked_reads_the_base_and_the_window() {
 }
 
 #[test]
+fn assigned_is_a_fresh_tracker_honouring_assign() {
+    const BUILT: Small = Small::assigned(NonZeroU64::MIN, 7);
+    assert_eq!((BUILT.generation(), BUILT.base()), (1, 7));
+    for (generation, base) in [(1, 0), (5, 1000), (u64::MAX, u64::MAX)] {
+        let Some(nonzero) = NonZeroU64::new(generation) else {
+            panic!("the table holds no zero generation");
+        };
+        let built = Small::assigned(nonzero, base);
+        assert_eq!(built, assigned(generation, base));
+        assert_eq!((built.generation(), built.base()), (generation, base));
+        assert_eq!(
+            (built.commit_candidate(), built.frontier(), built.acked()),
+            (None, None, 0)
+        );
+    }
+    // Usable at once under its generation, and only under it.
+    let mut tracker = Small::assigned(NonZeroU64::MIN, 10);
+    assert_eq!(tracker.ack(1, 10), Ok(Ack::Recorded));
+    assert_eq!(tracker.ack(2, 11), Err(Refusal::Stale));
+    assert_eq!(tracker.mark_committed(1, 11), Ok(Commit::Advanced));
+    // Later assignments rank against it like any other.
+    assert_eq!(tracker.assign(1, 0), Err(Refusal::Stale));
+    assert_eq!(tracker.reassign(20), Ok(2));
+}
+
+#[test]
 fn contiguous_prefix_and_gaps() {
     let mut tracker = assigned(1, 100);
     assert_eq!(tracker.commit_candidate(), None);
@@ -125,6 +151,50 @@ fn reassign_discards_old_generation() {
     let mut exhausted = assigned(u64::MAX, 0);
     assert_eq!(exhausted.reassign(0), Err(Refusal::Exhausted));
     assert_eq!(exhausted.generation(), u64::MAX);
+}
+
+/// `gaps` answers exactly what an offset-by-offset scan through `is_acked`
+/// would, from every start, across word boundaries: whole acknowledged
+/// words, whole empty words, a gap as the first and last bit of a word, and
+/// a window ending one short of `u64::MAX`.
+#[test]
+fn gaps_match_an_offset_by_offset_scan() {
+    fn naive(tracker: &Tracker<4>, from: u64) -> Vec<u64> {
+        let end = tracker.frontier().unwrap_or_else(|| tracker.base());
+        (from.max(tracker.base())..end)
+            .filter(|offset| !tracker.is_acked(*offset))
+            .collect()
+    }
+    let mut rng = XorShift64::new(0x000F_F5E7);
+    for base in [0, 1_000, u64::MAX - Tracker::<4>::CAPACITY] {
+        for round in 0..200_u32 {
+            let mut tracker = Tracker::<4>::new();
+            assert_eq!(tracker.assign(1, base), Ok(()));
+            for word in 0..4_u64 {
+                let fill = match (round + u32::try_from(word).unwrap_or(0)) % 5 {
+                    0 => u64::MAX,
+                    1 => 0,
+                    2 => !1,
+                    3 => u64::MAX >> 1,
+                    _ => rng.next_u64(),
+                };
+                for bit in (0..64).filter(|bit| fill & (1 << bit) != 0) {
+                    // The offset one short of `u64::MAX` is the top of the
+                    // last window; `u64::MAX` itself is never acknowledged.
+                    let offset = base + word * 64 + bit;
+                    if offset != u64::MAX {
+                        assert!(tracker.ack(1, offset).is_ok());
+                    }
+                }
+            }
+            for from in (base.saturating_sub(3)..=base.saturating_add(260)).step_by(7) {
+                assert_eq!(
+                    tracker.gaps(from).collect::<Vec<u64>>(),
+                    naive(&tracker, from)
+                );
+            }
+        }
+    }
 }
 
 #[test]

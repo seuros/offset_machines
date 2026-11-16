@@ -118,6 +118,14 @@ A new tracker is unassigned and refuses everything. `assign` takes a generation 
 
 `assign` answers `:assigned`, or refuses with `:stale`.
 
+```ruby
+tracker = OffsetMachines::Tracker.assigned(1, 100)   # generation 1, window at 100
+tracker.ack(1, 100)                                  # => :recorded
+OffsetMachines::Tracker.assigned(0, 100)             # raises RangeError
+```
+
+`Tracker.assigned(generation, base)` is `new` followed by an honoured `assign`, in one step with no refusal to handle: on a new tracker `assign` refuses only generation 0, and `assigned` raises `RangeError` for it instead, because the core's constructor takes a generation that is never zero.
+
 ### Ack
 
 ```ruby
@@ -228,6 +236,7 @@ The window never grows. An offset that falls outside it is a signal to stop fetc
 
   | Method | Honoured | Refused | Records the clock |
   | --- | --- | --- | --- |
+  | `Tracker.assigned(generation, base)` | a `Tracker` | raises `RangeError` / `TypeError` | never |
   | `assign(generation, base)` | `:assigned` | `:stale` | never |
   | `reassign(base)` | the new generation (Integer) | `:exhausted` | never |
   | `ack(generation, offset)` | `:recorded`, `:duplicate` | `:stale`, `:out_of_window` | never |
@@ -236,7 +245,7 @@ The window never grows. An offset that falls outside it is a signal to stop fetc
 
   Each refusal has its own symbol, the snake_case of the core's `Refusal` variant. There is no catch-all. The tracker takes no time at all, so no answer depends on an instant and none records one.
 
-- **A `Status` is valid or does not exist.** `Status.new` (positional, in the order above, or by keyword) checks its five values through the core's `Status::new`: they must be a view some tracker of this window could report. A non-Integer raises `TypeError` (the two marks may be `nil`); anything else no tracker reports, such as a frontier past the window, a candidate above the frontier, or an `acked` count that doesn't fit the marks, raises `RangeError`. `Status` is final: subclassing it raises `TypeError` and `allocate` is gone. That stops accidents, not reflection (`Marshal.load`, `Data#initialize` bound by hand); no method of the gem reads a `Status` back, so a forged one never reaches the tracker.
+- **A `Status` is valid or does not exist.** `Status.new` (positional, in the order above, or by keyword) checks its five values through the core's `Status::new`: they must be a view some tracker of this window could report. A non-Integer raises `TypeError` (the two marks may be `nil`); anything else no tracker reports, such as a frontier past the window, a candidate above the frontier, or an `acked` count that doesn't fit the marks, raises `RangeError`. `Status` is final: subclassing it raises `TypeError` and `allocate` is gone. That stops accidents, not reflection (`Marshal.load`, `Data#initialize` bound by hand); no method of the gem reads a `Status` back, so a forged one never reaches the tracker. `Tracker` is sealed the same way: it wraps native state, so subclassing raises `TypeError` and `allocate` is gone.
 
 - **The last offset is reserved.** Offset `2**64-1` is never ackable, so every commit candidate fits in an Integer the tracker accepts back.
 - **One tracker, one partition.** Offsets from two partitions in one tracker is a bug the tracker can't see.

@@ -6,8 +6,8 @@ Gem::Specification.new do |spec|
   spec.version = OffsetMachines::VERSION
   spec.authors = ['Abdelkader Boudih']
   spec.email = ['oss@seuros.com']
-  spec.summary = 'Initial bounded per-partition acknowledgement bitmap with a native Rust core'
-  spec.description = 'Local unstable offset acknowledgement tracker: contiguous commit candidate, gaps, ' \
+  spec.summary = 'Bounded per-partition acknowledgement bitmap with a native Rust core'
+  spec.description = 'Offset acknowledgement tracker: contiguous commit candidate, gaps, ' \
                      'generation checks. Not a commit log or runtime.'
   spec.homepage = 'https://github.com/seuros/offset_machines'
   spec.license = 'MIT'

@@ -15,7 +15,9 @@ module OffsetMachines
   end
 end
 
-# Native is required: no algorithm fallback. It validates the Data value above.
+# Native is required: no algorithm fallback. It validates the Data value above
+# and builds `Tracker#status` from the core's `Tracker::status`, the five
+# readers taken at once rather than dispatched one by one.
 require 'offset_machines_native/offset_machines_native'
 
 module OffsetMachines
@@ -26,11 +28,12 @@ module OffsetMachines
   # subclassing raises TypeError and `allocate` is gone. This stops accidents,
   # not reflection (Marshal, `Data#initialize` bound by hand); no method of
   # this gem reads a Status back, so a forged one never reaches the core.
-  Status.singleton_class.undef_method(:allocate)
-  Status.define_singleton_method(:inherited) { |_| raise TypeError, "#{Status} cannot be subclassed" }
-
-  class Tracker
-    # The core's `Tracker::status`.
-    def status = Status.new(generation, base, commit_candidate, frontier, acked)
+  #
+  # `Tracker` wraps native data and is sealed the same way: a subclass could
+  # override what callers rely on, and `allocate` would build a shell with no
+  # core behind it.
+  [Status, Tracker].each do |klass|
+    klass.singleton_class.undef_method(:allocate)
+    klass.define_singleton_method(:inherited) { |_| raise TypeError, "#{klass} cannot be subclassed" }
   end
 end

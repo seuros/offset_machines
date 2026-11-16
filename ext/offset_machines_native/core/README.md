@@ -4,7 +4,7 @@
 
 Engine-room flight manual: tally finished offsets and find the first hole in the log.
 
-Initial, unstable. Allocation-free `no_std` per-partition acknowledgement
+Pre-1.0. Allocation-free `no_std` per-partition acknowledgement
 bitmap: record which offsets finished processing, learn the contiguous commit
 candidate, and list the gaps behind the highest acknowledged offset.
 
@@ -16,6 +16,10 @@ refuses rather than grows.
 - `assign(generation, base) -> Result<(), Refusal>` installs a strictly newer
   assignment generation and restarts the window; older or equal generations
   (and zero) are refused as `Stale`.
+- `Tracker::assigned(generation, base) -> Tracker` builds a tracker already
+  assigned: what an honoured `assign` makes of a fresh one. The generation is
+  a `NonZeroU64`, the one value `assign` refuses on a fresh tracker being
+  zero, so it cannot fail.
 - `reassign(base) -> Result<u64, Refusal>` bumps the generation by one and
   returns it; `Exhausted` when the generation is already `u64::MAX`.
 - `ack(generation, offset) -> Result<Ack, Refusal>` answers `Ack::Recorded`, or
@@ -70,4 +74,8 @@ assert_eq!(tracker.mark_committed(1, 101), Ok(Commit::Advanced));
 assert_eq!(tracker.mark_committed(1, 101), Ok(Commit::Duplicate));
 assert_eq!(tracker.base(), 101);
 assert_eq!(tracker.reassign(101), Ok(2));
+
+// Already assigned, with no refusal to handle: the generation is never zero.
+let fresh = Tracker::<4>::assigned(core::num::NonZeroU64::MIN, 500);
+assert_eq!((fresh.generation(), fresh.base()), (1, 500));
 ```

@@ -22,6 +22,25 @@ class TrackerTest < Minitest::Test
     assert_equal 1, t.acked
   end
 
+  def test_assigned_is_a_new_tracker_after_an_honoured_assign
+    [[1, 0], [5, 1000], [2**64 - 1, 2**64 - 1]].each do |generation, base|
+      built = OffsetMachines::Tracker.assigned(generation, base)
+      by_hand = OffsetMachines::Tracker.new
+      assert_equal :assigned, by_hand.assign(generation, base)
+      assert_equal by_hand.status, built.status
+    end
+    t = OffsetMachines::Tracker.assigned(1, 10)
+    assert_equal :recorded, t.ack(1, 10)
+    assert_equal :stale, t.ack(2, 11)
+    assert_equal :stale, t.assign(1, 0)
+    assert_equal 2, t.reassign(20)
+    assert_raises(RangeError) { OffsetMachines::Tracker.assigned(0, 10) }
+    assert_raises(RangeError) { OffsetMachines::Tracker.assigned(-1, 10) }
+    assert_raises(RangeError) { OffsetMachines::Tracker.assigned(1, 2**64) }
+    assert_raises(TypeError) { OffsetMachines::Tracker.assigned(1.0, 10) }
+    assert_raises(TypeError) { OffsetMachines::Tracker.assigned(1, nil) }
+  end
+
   def test_acked_reads_the_base_and_the_window
     t = OffsetMachines::Tracker.new
     refute t.acked?(0)
@@ -149,7 +168,6 @@ class TrackerTest < Minitest::Test
       assert_raises(TypeError) { t.gaps(v, 1) }
     end
     [-1, 2**64].each { |n| assert_raises(RangeError) { t.assign(n, 0) } }
-    assert_raises(TypeError) { OffsetMachines::Tracker.allocate }
     t.freeze
     assert_raises(FrozenError) { t.assign(1, 0) }
     assert_raises(FrozenError) { t.reassign(0) }
@@ -187,5 +205,28 @@ class TrackerTest < Minitest::Test
     assert_equal 1, t.acked
   ensure
     GC.stress = previous
+  end
+
+  # `status` is the core's `Tracker::status`, read natively in one go: a
+  # redefined reader is never dispatched, so it can neither lie nor raise.
+  def test_status_does_not_dispatch_the_readers
+    t = OffsetMachines::Tracker.new
+    t.assign(3, 10)
+    t.ack(3, 10)
+    t.ack(3, 12)
+    expected = OffsetMachines::Status.new(3, 10, 11, 13, 2)
+    readers = %i[generation base commit_candidate frontier acked]
+    readers.each do |name|
+      OffsetMachines::Tracker.alias_method(:"__real_#{name}", name)
+      OffsetMachines::Tracker.remove_method(name)
+      OffsetMachines::Tracker.define_method(name) { raise "#{name} reader called" }
+    end
+    assert_equal expected, t.status
+  ensure
+    readers&.each do |name|
+      OffsetMachines::Tracker.remove_method(name)
+      OffsetMachines::Tracker.alias_method(name, :"__real_#{name}")
+      OffsetMachines::Tracker.remove_method(:"__real_#{name}")
+    end
   end
 end

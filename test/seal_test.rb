@@ -23,6 +23,14 @@ class SealTest < Minitest::Test
     assert_raises(RangeError) { OffsetMachines::Tracker.new.status.with(base: 1) }
   end
 
+  # `Tracker` wraps native data: a subclass could override what the native
+  # methods rely on, and `allocate` would build a shell with no core behind it.
+  def test_tracker_cannot_be_subclassed_or_allocated
+    assert_raises(TypeError) { Class.new(OffsetMachines::Tracker) }
+    assert_raises(NoMethodError) { OffsetMachines::Tracker.allocate }
+    assert_equal 1, OffsetMachines::Tracker.new.reassign(0)
+  end
+
   # The leaked subclass and `Marshal.load` still build values that never ran
   # the check. None is a Status the gem answers, and no method of the gem
   # reads a Status back, so neither can reach the core.
