@@ -26,5 +26,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     class.define_method("acked", method!(Tracker::acked, 0))?;
     class.define_method("status", method!(Tracker::status, 0))?;
     class.define_method("capacity", function!(Tracker::capacity, 0))?;
-    Ok(())
+    // `new` and `assigned` answer a Tracker: its class is fixed now, so no
+    // conversion runs `Object.const_get` later.
+    Class::pin_wrapped::<Tracker>(ruby, class).map(drop)
 }
