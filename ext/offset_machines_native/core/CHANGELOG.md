@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0](https://github.com/seuros/offset_machines/compare/offset-machines-v0.5.0...offset-machines-v0.6.0) (2026-11-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* seal Tracker, add Tracker.assigned and word-skipping gaps
+
+### Features
+
+* seal Tracker, add Tracker.assigned and word-skipping gaps ([e1e46e8](https://github.com/seuros/offset_machines/commit/e1e46e845103b9b356fa480938dd49df29056ce4))
+
 ## [0.5.0](https://github.com/seuros/offset_machines/compare/offset-machines-v0.4.0...offset-machines-v0.5.0) (2026-11-14)
 
 
