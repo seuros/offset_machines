@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/seuros/offset_machines/compare/offset_machines/v0.5.0...offset_machines/v0.5.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* fix wrapped classes at load so building a value runs no Ruby ([2c922c7](https://github.com/seuros/offset_machines/commit/2c922c777837a19e8d10535d473616c7b95217b7))
+
 ## [0.5.0](https://github.com/seuros/offset_machines/compare/offset_machines/v0.4.2...offset_machines/v0.5.0) (2026-11-16)
 
 
